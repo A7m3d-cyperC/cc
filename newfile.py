@@ -1,0 +1,135 @@
+import threading
+import time
+import requests
+from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
+from telegram import Update, ChatAction
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+
+# تكوين توكن البوت
+TELEGRAM_BOT_TOKEN = "6973612158:AAGpeigZkiyieUf-sZtaM_nJ0tuHN-sjS6Y"
+
+# إعدادات البحث
+SEARCH_PAGES = 20  # عدد الصفحات التي سيتم البحث فيها
+
+def generate_user_agent():
+    ua = UserAgent()
+    return ua.random
+
+def is_valid_link(link):
+    if "bing.com" not in link and "images/" not in link and "maps/" not in link:
+        return True
+    return False
+
+def search_bing(query, page, use_proxy=False, proxies=None, chat_id=None, context=None):
+    url = f"https://www.bing.com/search?q={query}&first={(page-1)*50}"
+    headers = {"User-Agent": generate_user_agent()}
+    try:
+        if use_proxy:
+            response = requests.get(url, headers=headers, proxies=proxies, timeout=10)
+        else:
+            response = requests.get(url, headers=headers, timeout=10)
+    except requests.exceptions.RequestException as e:
+        context.bot.send_message(chat_id=chat_id, text=f"Error occurred: {str(e)}")
+        return
+
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.text, 'html.parser')
+        links = soup.find_all('a', href=True)
+        if len(links) == 0:
+            return
+        for link in links:
+            href = link['href']
+            if href.startswith('http') and is_valid_link(href):
+                save_to_file(href)
+                send_link_count(chat_id, context=context)
+    else:
+        context.bot.send_message(chat_id=chat_id, text="Error occurred while fetching page content")
+
+def save_to_file(url):
+    with open('found_links.txt', 'a') as file:
+        file.write(url + '\n')
+
+def send_link_count(chat_id, context):
+    try:
+        with open('found_links.txt', 'r') as file:
+            links = file.readlines()
+
+        context.bot.send_message(chat_id=chat_id, text=f"Link founds [{len(links)}]")
+
+    except FileNotFoundError:
+        context.bot.send_message(chat_id=chat_id, text="No links found.")
+
+def send_links_file(chat_id, context):
+    try:
+        with open('found_links.txt', 'rb') as file:
+            context.bot.send_document(chat_id=chat_id, document=file)
+
+    except FileNotFoundError:
+        context.bot.send_message(chat_id=chat_id, text="No links found.")
+
+def search_with_dorks_from_file(file_path, use_proxy, proxies, chat_id, context):
+    with open(file_path, 'r') as file:
+        dorks = file.read().strip()
+
+    search_with_dorks(dorks, use_proxy, proxies, chat_id, context)
+    send_links_file(chat_id, context)
+
+def search_with_dorks(dorks, use_proxy, proxies, chat_id, context):
+    if dorks:
+        found_links = []
+        print("Searching...")
+        for dork in dorks.split("\n"):
+            print(f"Searching for '{dork.strip()}':")
+            if use_proxy and proxies:
+                proxy_ip, proxy_port = proxies.split(":")
+                proxies_data = {
+                    "http": f"http://{proxy_ip}:{proxy_port}",
+                    "https": f"https://{proxy_ip}:{proxy_port}"
+                }
+                for page in range(1, SEARCH_PAGES + 1):
+                    search_bing(dork.strip(), page, True, proxies_data, chat_id, context=context)
+                    time.sleep(1)
+            else:
+                for page in range(1, SEARCH_PAGES + 1):
+                    search_bing(dork.strip(), page, False, None, chat_id, context=context)
+                    time.sleep(1)
+        send_found_links(chat_id, context)
+        send_links_file(chat_id, context)
+    else:
+        context.bot.send_message(chat_id=chat_id, text="No dorks found")
+
+def send_found_links(chat_id, context):
+    try:
+        with open('found_links.txt', 'r') as file:
+            links = file.readlines()
+            for link in links:
+                context.bot.send_message(chat_id=chat_id, text=link.strip())
+    except FileNotFoundError:
+        context.bot.send_message(chat_id=chat_id, text="No links found.")
+
+# ... (الكود السابق)
+
+def start(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text("مرحبًا! قم بإرسال ملف الدوركات الخاص بك.")
+
+def handle_dorks_file(update: Update, context: CallbackContext) -> None:
+    file_id = update.message.document.file_id
+    file = context.bot.get_file(file_id)
+    file_path = file.download('dorks.txt')
+
+    # تنفيذ البحث بالدوركات من الملف
+    search_with_dorks_from_file(file_path, use_proxy=False, proxies=None, chat_id=update.message.chat_id, context=context)
+
+def main():
+    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
+
+    dp = updater.dispatcher
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.document, handle_dorks_file))
+
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
